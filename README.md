@@ -6,9 +6,10 @@ Table of Contents
   
   - **Functional Data Analysis:** The objective was to analyze sales data from 2017 to 2019 to have a good summary of the company pricing policy for the past years and a better understanding of the dynamics of the sales by using  functional data analysis, multivariate statistics, smoothing and functional principal component analysis (FPCA) techniques.
   
-  - Graph Analysis:
+  - **Graph Analysis:** The objective was to investigate the spreading of a disease, an opinion, a behavior, information, or another transmissible resource, on a real network. We decided to work on the spreading of different contagious diseases on the air transportation flow of the United States before and
+during the COVID-19 pandemic, respectively in 2019 and 2021.
   
-  - House Price Prediction:
+  - **House Price Prediction:** 
   
   - Non Parametric Models:
   
