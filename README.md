@@ -19,6 +19,6 @@ during the COVID-19 pandemic, respectively in 2019 and 2021.
       - Bankruptcy: The objective was to predict whether a company is likely to go bankrupt or not by using the Linear Discriminant Analysis (LDA) method. 
       - Marketing: The goal was to build different models to predict whether a user will click on an ad based on the characteristics of the user.
   
-  - Spatial Econometrics:
+  - **Spatial Econometrics:**
   
   - Web Mining:
