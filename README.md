@@ -15,7 +15,9 @@ during the COVID-19 pandemic, respectively in 2019 and 2021.
   
   - **Program Evaluation:** The goal of this homework was to reproduce key results of the paper of _Draca et al. (2011, AER) - Panic on the Streets of London: Police, Crime, and the July 2005 Terror Attacks._  The paper studies the relationship between police and crime by exploiting increased security presence after the 2005 London terrorist attacks using a  Difference-in-Difference (DID) strategy. 
   
-  - Scoring:
+  - **Scoring:**
+      - Bankruptcy: The objective was to predict whether a company is likely to go bankrupt or not by using the Linear Discriminant Analysis (LDA) method. 
+      - Marketing: The goal was to build different models to predict whether a user will click on an ad based on the characteristics of the user.
   
   - Spatial Econometrics:
   
