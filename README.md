@@ -13,7 +13,7 @@ during the COVID-19 pandemic, respectively in 2019 and 2021.
   
   - **Non Parametric Models:** The objective was to explore cross-validation methods for Kernel Density Estimation, specifically focusing on Maximum Likelihood Cross Validation for bandwidth selection.
   
-  - Program Evaluation:
+  - **Program Evaluation:** The goal of this homework was to reproduce key results of the paper of _Draca et al. (2011, AER) - Panic on the Streets of London: Police, Crime, and the July 2005 Terror Attacks._  The paper studies the relationship between police and crime by exploiting increased security presence after the 2005 London terrorist attacks using a  Difference-in-Difference (DID) strategy. 
   
   - Scoring:
   
