@@ -1,0 +1,1732 @@
+---
+title: "Spatial Econometrics Project"
+author: "Maria Bracque Vendrell & Théo Condette"
+date: "Mars 2024"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(warning=FALSE)
+knitr::opts_chunk$set(message=FALSE)
+```
+
+**Import libraries**
+
+```{r, warning=FALSE}
+library(Matrix)
+library(tidyverse)
+library(corrplot)
+library(RColorBrewer)
+library(sf)
+library(dplyr)
+library(knitr)
+library(colorspace)
+library(cartography)
+library(ggplot2)
+library(spdep)
+library(spatialreg)
+library(stargazer)
+library(mice)
+library(reshape2)
+library(missForest)
+library(viridis)
+library(lattice)
+library(gravity)
+```
+
+# 1. Data
+
+## 1.1. Migration flow data
+
+The analysis is based on the migration flow data provided by Abel and Cohen (2019), who use six different algorithms to estimate bilateral flows from changes in the migrant stocks in all countries. The different methods of estimation are compared in Berlemann et al. (2021) and the data can be loaded as follow :
+
+```{r}
+load("mig_data.RData")
+```
+
+The data contains the aggregate number of estimated migration by origin (variable origin) and destination (variable dest) countries in the intervals 1990-1995, 1995-2000, 2005-2010, 2010-2015, 2015-2020 (variable period). The migration estimates variables are :
+
+-   drop_neg: Drop Negative
+-   reverse_neg: Reverse Negative
+-   mig_rate: Migration Rates
+-   min_open: Minimization open
+-   min_close: Minimization closed
+-   pb: Pseudo-Bayesian closed
+
+In this project, we will consider the period "2015-2020" as a reference period. However, at the end of part 2, we will see if we obtain similar results by changing the period of reference.
+
+***Q Your first exercise is to choose one among the six estimates of the migrant flows described in Abel and Cohen (2019) and Berlemann et al. (2021), and to briefly describe the method chosen. More specifically, you will need to explain the link between the stock tables and the estimate flows data.***
+
+Let's start by providing a visual representation of the correlation among the six estimation columns for the period "2015-2020". This will helps us choose one among the six estimates of the migrant flows.
+
+```{r}
+#Select period 2015-2020
+mig_data_15_20 <- mig_data[mig_data$period=='2015-2020',]
+
+#Select 6 estimations columns
+data_cor <- mig_data_15_20[,c(4:9)]
+cor_matrix <- cor(data_cor)
+
+corrplot(cor_matrix, method="color", col=brewer.pal(n=8, name="RdBu"), 
+         type="upper", tl.col="black", tl.srt=45, tl.offset=1, addCoef.col="black")
+```
+
+We can see that there is a strong positive correlation between *drop_neg* and *reverse_neg* (0.983) and between *min_open* and *drop_neg* (0.988), this means that these methods will tend to produce similar results. In addition, *mig_rate* shows relatively weak correlations with other methods. And finally, we see that the last method (*pb*) is correlated to every method, but not too much either. Thus the *Pseudo-Bayesian closed* methods seems to be an adequate compromise among all the other estimates.
+
+Furthermore, according to Abel and Cohen (2019), among the six methods evaluated, the two closed demographic accounting methods outperform others, and the Pseudo-Bayesian closed approach has the highest correlation with the empirical migration data.
+
+Therefore, taking into account these points, we will choose the *Pseudo-Bayesian closed* method to perform the analysis of immigration rates and bilateral migration flows in the next two parts of te project.
+
+The *Pseudo-Bayesian closed* method uses migrant stock data published by the World Bank and United Nations to estimate bilateral migration flows between all origin-destination country pairs. The link between the stock tables and the estimated flows data is as follows: The stock data provides the number of migrants from each origin country residing in each destination country at two points in time. The difference between these two stock numbers is used to estimate the flow of migrants between the two countries during the intervening period (2015-2020 here). In addition, this method addresses the problem of not taking into account the deaths among the migrants or return migration by using additional demographic data (such as death rates) and making certain assumptions (such as that migration patterns are stable over time) to adjust the raw flow estimates.
+
+***Q In the Annex, we have represented the largest 0.2% of flows between countries for each estimation method. In a given country, the left bar represents the quantity of outgoing flows and the right bar the quantity of incoming flows. Briefly describe the map corresponding to the method you have chosen. Do you observe any notable similarities/differences between the 6 maps?***
+
+First, let's describe the map corresponding to the *Pseudo-Bayesian closed* method. On the graph we can see that the country with the highest quantity of incoming flows is the United States of America (USA) and the country with the highest quantity of outgoing flows is Pakistan.
+
+Second, let's look at the similarities between the six maps corresponding to the different estimation methods. Across all maps, the USA appear to be a significant destination of migration flows. In addition, countries with larger populations or strategic geographic locations tend to have higher volumes of migration flows in general.
+
+And lastly, let's talk about the differences among these maps. The magnitude and directionality of migration flows vary significantly between the six estimation methods, reflecting differences in the underlying assumptions, methodologies, and data used. For example, for the *drop negative*, the *reverse negative* and the *minimization open* methods, it appears that Germany has the highest quantity of incoming flows whereas for the *migration rate*, the *minimization close*, and the *pseudo-bayesian*, it is the USA.
+
+## 1.2. Contours data
+
+World contour boundaries can be found here: <https://public.opendatasoft.com/explore/dataset/world-administrative-boundaries/export/>
+
+***Q Import the data and transform the Coordinate Reference System using the following one: 'ESRI:54030'***
+
+```{r}
+# unzip("world-administrative-boundaries.zip")
+
+contour_data <- st_read("world-administrative-boundaries.shp")
+
+contour_data_transformed <- st_transform(contour_data, crs = "ESRI:54030")
+
+plot(contour_data_transformed)
+```
+
+## 1.3. Explanatory variables at country level
+
+Most explanatory variables on country level (object my_covariates) are available in the file covariates.RData. This data is taken from Laurent et al. (2022) who study international remittances flows. The file combines information from several data sets that were originally disseminated by different government agencies or international organizations (United Nations, World Bank, CIA, etc.).
+
+```{r}
+load("covariates.RData")
+```
+
+Among these variables, we will consider:
+
+-   deflactor: GDP deflator (measure of inflation)
+-   lifeexp: life expectancy
+-   dummyEarthquake, dummyFlood, dummyStorm: occurrence of a strong earthquake/flood/storm
+-   gdp_PPP: GDP per capita USD
+-   FD: financial Development index
+-   population: size of the population
+-   politicalstability: measure of political stability
+-   landlocked: an indicator(a landlocked country cannot access the ocean since the nearest coast is in another administrative unit)
+-   conflictpercapita: number of conflict events per capita
+-   vulnerability: Measures a country's exposure, sensitivity and capacity to adapt to the negative effects of climate change
+-   prec_3days: risk measure of heavy precipitation for 3 consecutive days (in mm) during one year
+-   heat_wave: risk measure of heat wave (in days) during one year
+-   dry_wave: risk measure of dry (in days) during one year
+
+```{r}
+nom_vars <- c("CountryCode", "CountryName", "deflactor", "lifeexp",
+              "dummyEarthquake", "dummyFlood", 
+              "dummyStorm", "GDPpercapita_UN", "FD", "population", 
+              "politicalstability", "landlocked", "conflictpercapita", 
+              "vulnerability", "prec_3days", "heat_wave",
+              "dry_wave")
+
+my_covariates <- my_covariates[, nom_vars]
+```
+
+***Q Propose at least one additional variable that could explain the emigration/immigration rate by country. If possible, give a link to the data source or a reference to an article that uses this information in the context of migration. Import this variable and merge it to the existing explanatory variables.***
+
+One additional variable that could explain emigration/immigration rates by country is "mean years of schooling". This variable represents the average level of education achieved by people aged 25 and older in a country. This data is often used as an indicator of the education level of a country's population, and we think that the level of education in a country can influence migration rates. Countries with higher levels of education might attract more immigrants seeking better job opportunities, while countries with lower levels of education might see more emigration as people leave to seek education elsewhere.
+
+The database we have chosen comes from Our World in Data, and corresponds to the average years of formal education for individuals aged 15-64 for 146 countries between 1870 and 2020.
+
+Database link: <https://ourworldindata.org/grapher/mean-years-of-schooling-long-run?tab=table>
+
+```{r}
+
+schooling_years <- read.csv("mean-years-of-schooling.csv", sep=',')
+colnames(schooling_years) <- c("CountryName", "CountryCode" , "Year", "schooling_years_mean")
+
+#let's drop the years before 1990 and the continents
+schooling_years <- schooling_years %>%
+  filter(CountryCode != "") %>%
+  filter(Year > 1990)
+
+schooling_years <- schooling_years %>%
+  mutate(Period = case_when(Year == 1995 ~ "1990-1995", Year == 2000 ~ "1995-2000",
+                            Year == 2005 ~ "2000-2005", Year == 2010 ~ "2005-2010",
+                            Year == 2015 ~ "2010-2015", Year == 2020 ~ "2015-2020"))
+
+schooling_years <- schooling_years %>% select(-Year)
+```
+
+Let's add the values for the period 2015-2020 to the my_covariates data frame.
+
+```{r}
+
+missing_countries <- setdiff(schooling_years$CountryCode, my_covariates$CountryCode)
+print(missing_countries)
+
+```
+
+We notice that these countries are "REU": Reunion, "TWN": Taiwan, and "OWID_WRL": World. We can drop them.
+
+```{r}
+
+schooling_years <- schooling_years %>%
+  filter(!CountryCode %in% missing_countries)
+
+```
+
+So, we can now add the values for the period 2015-2020 to the my_covariates data frame.
+
+```{r}
+schooling_years_2015_2020 <- schooling_years %>%
+  filter(Period == "2015-2020") %>% 
+  select(-CountryName) %>% 
+  select(-Period)
+
+my_covariates <- left_join(my_covariates, schooling_years_2015_2020, by = "CountryCode")
+```
+
+To solve potential issues of missing data you should use the missForest() function.
+
+```{r}
+require("missForest")
+```
+
+```{r}
+nom_vars <- c("deflactor", "lifeexp",
+              "dummyEarthquake", "dummyFlood", 
+              "dummyStorm", "GDPpercapita_UN", "FD", "population", 
+              "politicalstability", "landlocked", "conflictpercapita", 
+              "vulnerability", "prec_3days", "heat_wave",
+              "dry_wave","schooling_years_mean")
+
+my_covariates[, nom_vars] <- missForest(my_covariates[, nom_vars])$ximp
+```
+
+## 1.4. Explanatory variables at country-pair level
+
+The explanatory variables on country-pair level are provided in the file explanatory.RData. This information is relevant for the model of bilateral migration flows. Among these variables you can focus on:
+
+-   contig: equals 1 if country *i* and *j* have a common frontier
+-   comlang_off : equals 1 if country *i* and *j* have a common official or primary langage
+-   comcur : equals 1 if country *i* and *j* have a common currency
+-   colony : pair ever in colonial relationship
+-   curcol : pair currently in colonial relationship
+
+```{r}
+load("pairs.RData")
+```
+
+# 2. Emigration and immigration rates by country
+
+In this part we will explain the emigration (out-migration) and immigration (in-migration) rates by country. The immigration rate measures the overall number of migrants arriving in a country relative to the size of the local population. Similarly, the emigration rate measure the number of migrants the leaving a country relative to the population.
+
+***Q First you should derive the total in and out flows by country. This is easily achieved by aggregating the migration flow data first by origin, then by destination country.***
+
+```{r}
+total_out_flows <- mig_data_15_20 %>%
+  group_by(origin) %>%
+  summarise(total_outflow = sum(pb))
+
+colnames(total_out_flows) <- c("CountryCode", "total_outflow" )
+
+total_in_flows <- mig_data_15_20 %>%
+  group_by(dest) %>%
+  summarise(total_inflow = sum(pb))
+
+colnames(total_in_flows) <- c("CountryCode", "total_inflow" )
+
+```
+
+***Q Merge the total in and out flows to the country-level explanatory variables and also combine it with the contours data. The common key is the iso3/CountryCode variable.***
+
+First, let's merge the total in and out flows to the country-level explanatory variables:
+
+```{r}
+explanatory_merge <- merge(my_covariates, total_in_flows, by = "CountryCode")
+
+explanatory_merge <- merge(explanatory_merge, total_out_flows, by = "CountryCode")
+
+colnames(explanatory_merge)[1] <- "iso3"
+
+```
+
+Now, let's combine it with the contours data:
+
+```{r}
+final_table  <- merge(contour_data_transformed, explanatory_merge, by = "iso3")
+
+head(final_table)
+```
+
+***Q Verify that the common key (iso3) is unique in the spatial object. If not, drop the duplicated rows. The number of distinct iso3 should be 192!***
+
+```{r}
+length(unique(final_table$iso3))
+
+length(final_table$iso3)
+
+```
+
+Let's drop the duplicates:
+
+```{r}
+final_table <- subset(final_table, !duplicated(iso3))
+length(unique(final_table$iso3))
+```
+
+We have 192 distinct iso3.
+
+***Q Create the dependent variables emigrates and immigrates by dividing total in and out flows by the population size. Create also the variable net that corresponds to the difference between immigrates and emigrates***
+
+```{r}
+final_table$emigrates <- final_table$total_outflow / final_table$population
+final_table$immigrates <- final_table$total_inflow / final_table$population
+
+final_table$net <- final_table$immigrates - final_table$emigrates
+
+```
+
+***Q Begin the exploratory data analysis by investigating which explanatory variables are the most correlated with the dependent variables and comment the results you obtain. Do you see any differences of correlation sign between emigrates and immigrates?***
+
+We use a correlation matrix representation to answer this question :
+
+```{r}
+data_without_geom <- st_drop_geometry(final_table%>%select(where(is.numeric)))
+data_cor <- cor(data_without_geom)
+
+levelplot(data_cor[-which(row.names(data_cor)%in%c("emigrates","immigrates","net")),
+                   c("emigrates","immigrates","net")],
+        main = "Correlation between dependent and explanatory variable",
+        xlab ="Explanatory variable",
+        ylab ="Dependent variables",
+        scales = list(x = list(rot = 60)), 
+        col.regions = colorRampPalette(c("red","white", "blue"))(100),
+        pretty=TRUE)
+```
+
+The results are interesting, high life expectancy, GDP per capita, FD (financial development index), political index, and schooling duration are positively correlated with immigration. However, environmental stresses (storm, flood, vulnerability, precipitation vulnerability) are negatively correlated with immigration.
+
+Also, what was unexpected is that emigration has the same correlation sign as immigration with the explanatory variables. The only difference which is not so big is for the GDP deflator index. Inflation is positively correlated with emigration and is negatively correlated with immigration.
+
+We can highlight some important variables: GDP deflator, life expectancy, GDP per capita, financial development index, and vulnerability.
+
+The net dependent variable might be of interest for a better understanding of what is preponderant: immigration or emigration?
+
+As we can see net difference between inflows and outflows is negatively correlated with GDP delator and vulnerability. On the other hand, the net is positively correlated with life expectancy, GDP per capita, and financial development index, which makes more sense.
+
+***Q Represent the two dependent variables emigrates and immigrates on a map and interpret the graphic.***
+
+Remark: it could be interesting to plot also the difference between Inflows and Outflows that corresponds to the net migration rate
+
+Let's plot emigration first.
+
+```{r}
+ggplot() +
+  geom_sf(data = final_table, aes(fill = emigrates ), size = 0.1, col = NA) +
+  scale_fill_continuous_sequential(palette = "Blues 3", name = paste("Emigrate rate")) +
+  theme_minimal()  +
+  labs(title = "Emigration Rate by country")
+
+```
+
+We see that there is a lot of emigration in Australia, central Africa, Saudi Arabia area, Venezuela, Canada, and Kazakhstan.
+
+```{r}
+ggplot() +
+  geom_sf(data = final_table, aes(fill = immigrates ), size = 0.1, col = NA) +
+  scale_fill_continuous_sequential(palette = "Blues 3", name = paste("Immigrate rate")) +
+  theme_minimal()  +
+  labs(title = "Immigration Rate by country")
+
+```
+
+We see that there is a lot of immigration in Australia, in the Saudi Arabia area, in the West Coast of South America, in Canada, in Kazakhstan, and in some countries in Europe(Luxembourg, Germany).
+
+```{r}
+ggplot() +
+  geom_sf(data = final_table, aes(fill = net ), size = 0.1, col = NA)+
+  scale_fill_gradient2(low = "red", mid = "grey", high = "green", midpoint = 0) +
+  theme_minimal()  +
+  labs(title = "Net difference immigration-emigration rate by country")
+
+```
+
+We see that there is more immigration than emigration in Canada, in the West Coast of South America, in Australia, in Russia, and in some countries in Europe. We also see that there is more emigration than immigration in Venezuela, in central Africa, in the south of Africa, Pakistan, and Kazakhstan.
+
+***Q Define one spatial weight matrix and motivate your choice, then represent the neighborhood links on a map.***
+
+We can see in the Appendix the largest 0.2% of flows between countries for the *pseudo-Bayesian closed* method. On the graph, we can see that the country with the highest quantity of incoming flows is the United States of America (USA) and the country with the highest quantity of outgoing flows is Pakistan. This means that in our modelization, a change in what happens in America would probably impact far countries like Pakistan.
+
+Since the dominant flows are far from each other, the spatial weight has to be taken seriously if we want to avoid being biased. In this example, contiguity distance would be a poor approach because it would mean that what happens in the country is only affected by the neighbors which is a big assumption.
+
+Nearest neighbors might be of interest since we can define how far we want to go with the parameter K or d. Also, it would enable to bring connectivity between a continent and a very far country which is desirable here. However, going far means that the weight matrix won't be sparse anymore and many connections are not desirable.
+
+Thus, there is a problem with both measures. We need to find a distance that might consider geographical distance and the migration link strength. This would enable us to have a weight matrix that considers a lot of close neighbors and the ones with strong migration links that are far away.
+
+We might consider the union of:
+
+-   Spatial distance: easier for people that are from another close country to migrate.
+-   Spatial socio-characteristic: If there is a lot of migration (emigration + immigration) between two countries in the last period, we want them to be linked.
+
+### Spatial socio-characteristic :
+
+```{r}
+# We want to define the 2 top neighbors based on migration Pseudo-Bayesian closed :
+
+K = 1
+mig_data_10_15 <- mig_data[mig_data$period=='2010-2015',]
+matrix_representation <- dcast(mig_data_10_15, origin ~ dest, value.var = "pb")
+row.names(matrix_representation) <- matrix_representation$origin
+matrix_representation <- matrix_representation[,-which(colnames(matrix_representation)=="origin")]
+
+# Remove the one we are not interested in :
+
+matrix_representation<-matrix_representation[which(colnames(
+  matrix_representation)%in%final_table$iso3),
+  which(colnames(matrix_representation)%in%final_table$iso3)]
+
+
+
+for(country in colnames(matrix_representation)){
+  
+Top_neighbors <- which(matrix_representation[country,] %in% sort(
+  as.numeric(matrix_representation[country,]),decreasing =T)[1:K])
+matrix_representation[country,Top_neighbors] <- 1
+matrix_representation[country,-Top_neighbors] <- 0  
+  
+}
+
+# Make it symmetric
+Spatial_weight_migration <- (t(matrix_representation)+matrix_representation)/2
+
+# Create a list : 
+neighbor_list <- list()
+
+# Iterate over each row of the spatial weight matrix
+for (i in 1:nrow(Spatial_weight_migration )) {
+  # Extract indices of neighboring regions for the current region
+  neighbors <- which(Spatial_weight_migration [i, ] > 0)
+  
+  # Remove the current region from the list of neighbors
+  neighbors <- neighbors[neighbors != i]
+  
+  # Add the list of neighbors to the neighbor list
+  neighbor_list[[i]] <- neighbors
+}
+class(neighbor_list) <- "nb"
+```
+
+We see that this distance is quite nice because we have link based on past migration and we consider far relationship that might be of interest to do our modelization.
+
+```{r}
+# Get Nearest neighbors
+geometry <- st_geometry(final_table)
+centroid <- st_coordinates(st_centroid(geometry ))
+
+```
+
+```{r}
+
+plot.new()
+plot(geometry , lwd = 1)
+plot(neighbor_list, centroid, add = TRUE, col = "red")
+
+```
+
+This representation is interesting because we took the top neighbors of each country as links and we see that the US, UE, Russia, and Australia have a lot of them. This means that these countries are where the top migration occurs for many countries.
+
+### Spatial distance :
+
+Now we can focus on spatial distance. We want migration to be easier for close cross border countries.
+
+```{r}
+# Get Nearest neighbors
+geometry  <- st_geometry(final_table)
+centroid <- st_coordinates(st_centroid(geometry ))
+neighbors_5NN <- knn2nb(knearneigh(centroid , 4))
+neighbors_1000km <-dnearneigh(st_centroid(geometry ), d1 = 0, d2 = 1000000)
+
+```
+
+```{r}
+
+plot.new()
+plot(geometry , lwd = 1)
+plot(neighbors_1000km, centroid, add = TRUE, col = "red")
+
+```
+
+The inverse distance is not appropriate for the full map to get the neighbors. Large country might have no connection and small country too many. This is not what we want. Let's look at K nearest neighbors instead.
+
+```{r}
+
+plot.new()
+plot(geometry , lwd = 1)
+plot(neighbors_5NN, centroid, add = TRUE, col = "red")
+
+```
+
+K nearest neighbors might be more appropriate even if it would mean we consider long distance for neighbors of big countries.
+
+### Union for final spatial weight matrix:
+
+```{r}
+# Combine both sets of neighbors
+combined_nb <- union.nb(neighbors_5NN, neighbor_list)
+
+# Create the spatial weight matrix
+weight_list <- nb2listw(combined_nb)
+
+```
+
+```{r}
+plot.new()
+plot(geometry , lwd = 1)
+plot(combined_nb, centroid, add = TRUE, col = "red")
+
+```
+
+This weight distance matrix looks really nice, we have local and global link and the number of link seems not too big.
+
+***Q Use a Moran scatter plot as a first investigation whether there is spatial autocorrelation in the dependent variables. Where are located the countries with the most important local spatial autocorrelation?***
+
+```{r}
+moran_plot_immi <- moran.plot(final_table$immigrates, listw = weight_list,
+                              labels=as.character(final_table$iso3))
+```
+
+```{r}
+moran_plot_emi <- moran.plot(final_table$emigrates, listw = weight_list,
+                             labels=as.character(final_table$iso3))
+
+```
+
+We suspect spatial correlation for both emigration and immigration, we observe positive trend of the Moran index.
+
+We can now have a look at the location with the most important local spatial autocorrelation.
+
+```{r}
+local_moran_emi_t <- localmoran(final_table$emigrates, weight_list,
+                                alternative = "greater") # We test for positive auto-corr
+local_moran_emi <- data.frame(local_moran_emi_t)
+local_moran_emi$cluster <- attr(local_moran_emi_t,"quadr")$mean
+local_moran_emi$significance<- ifelse(local_moran_emi[,"Pr.z...E.Ii.."]<0.10,1,0)
+local_moran_emi <- local_moran_emi[,c("Ii","significance","cluster")]
+colnames(local_moran_emi)<- c("Spatial_correlation_emi","significance_emi","Cluster_emi")
+
+local_moran_immi_t <- localmoran(final_table$immigrates, weight_list,alternative = "greater")
+local_moran_immi <- data.frame(local_moran_immi_t)
+local_moran_immi$cluster <- attr(local_moran_immi_t,"quadr")$mean
+local_moran_immi$significance<- ifelse(local_moran_immi[,"Pr.z...E.Ii.."]<0.10,1,0)
+local_moran_immi <- local_moran_immi[,c("Ii","significance","cluster")]
+colnames(local_moran_immi)<- c("Spatial_correlation_immi","significance_immi","Cluster_immi")
+
+
+local_moran_df <- cbind(local_moran_emi,local_moran_immi)
+local_moran_df$id <- final_table$iso3
+local_moran_df$name <- final_table$name
+
+
+```
+
+```{r}
+significant <- which(local_moran_df$significance_immi==1)
+local_moran_df_signif<- local_moran_df[order(
+  local_moran_df$Spatial_correlation_immi[significant],decreasing = TRUE),]
+
+
+# Creating the ggplot for the top ten observations
+ggplot(local_moran_df_signif, aes(x = reorder(name, -Spatial_correlation_immi), 
+                                  y = Spatial_correlation_immi)) +
+  geom_col() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) +
+  ggtitle("Countries with significant local spatial autocorrelation for immigration") +
+  labs(x = "Name", y = "Local Moran I")
+
+
+```
+
+The countries with the most important significant local spatial autocorrelation for immigration are : United Arab Emirates and Bahrain.
+
+
+```{r}
+significant <- which(local_moran_df$significance_emi==1)
+local_moran_df_signif<- local_moran_df[order(
+  local_moran_df$Spatial_correlation_emi[significant],decreasing = TRUE),]
+
+
+# Creating the ggplot for the top ten observations
+ggplot(local_moran_df_signif, aes(x = reorder(name, -Spatial_correlation_emi), 
+                                  y = Spatial_correlation_emi)) +
+  geom_col() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) +
+  ggtitle("Countries with significant local spatial autocorrelation for emigration") +
+  labs(x = "Name", y = "Local Moran I")
+
+```
+
+The countries with the most important significant local spatial autocorrelation for emigration are : United Arab Emirates, Bahrain and Aruba. 
+
+We can also represent the results on the map as follow :
+
+```{r}
+local_moran_graph <- merge(final_table,local_moran_df[,c("Spatial_correlation_emi",
+                                                         "significance_emi" ,
+                                                         "significance_immi",
+                                                         "Spatial_correlation_immi",
+                                                         "id")],by.x="iso3",by.y="id")
+
+centroids <- st_coordinates(st_centroid(local_moran_graph$geometry))
+
+local_moran_graph$X <- centroids[,1]
+local_moran_graph$Y <- centroids[,2]
+
+
+```
+
+
+```{r}
+ggplot() +
+  geom_sf(data = local_moran_graph, size = 0.1, col = NA)+
+  geom_point(data=subset(local_moran_graph,local_moran_df$significance_emi==1), 
+             aes(x = X, y =Y, size = Spatial_correlation_emi),
+             color = "black", fill = "red",stroke=1,shape=21) +
+  scale_size_continuous(range = c(1, 5)) +
+  theme_minimal()  +
+  labs(title = "Spatial autocorrelation for the Emigration by country")
+
+```
+We see that we have high local spatial autocorrelation for emigration around Africa, Saudi-Arabia, and in the north of south America.
+
+
+
+```{r}
+ggplot() +
+  geom_sf(data = local_moran_graph, size = 0.1, col = NA)+
+  geom_point(data=subset(local_moran_graph,local_moran_df$significance_immi==1), 
+             aes(x = X, y =Y, size = Spatial_correlation_immi),
+             color = "black", fill = "red",stroke=1,shape=21) +
+  scale_size_continuous(range = c(1, 5)) +
+  theme_minimal()  +
+  labs(title = "Spatial autocorrelation for the Immigration by country")
+
+```
+We see that we have high local spatial autocorrelation for immigration around Europe,South-Africa, Saudi-Arabia, and Indonesia.
+
+
+
+***Q Perform a statistical test to see whether the spatial correlation in the dependent variables is significant.***
+
+We suspect spatial autocorrelation, thus we perform Moran test. We suppose that the data is not iid and does not follow any distribution, thus we set H0 under non free sampling .
+
+```{r}
+moran.test(final_table$emigrates, weight_list)
+
+```
+
+```{r}
+moran.test(final_table$immigrates, weight_list)
+
+```
+
+Based on the Moran's I test results, we can conclude that there is significant positive spatial autocorrelation in both emigrates and immigrates data.
+
+***Q Estimate an OLM for the two dependent variables (emigrates and immigrates) with respect to the list of explanatory variables. Interpret the results, including the values of the coefficients. Is there spatial autocorrelation in the residuals? Where are located the countries with the most important spatial autocorrelation in the residuals?***
+
+```{r}
+# ordinary linear model
+explanatory_var <- colnames(final_table)[10:25]
+formula_immi <- as.formula(paste("immigrates ~", paste(explanatory_var, collapse = " + ")))
+formula_emi <- as.formula(paste("emigrates ~", paste(explanatory_var, collapse = " + ")))
+
+
+olm_immi <- lm(formula_immi, data = final_table)
+olm_emi <- lm(formula_emi, data = final_table)
+
+```
+
+Let's first look at the olm results for immigration as dependent variable. 
+```{r}
+summary(olm_immi)
+
+```
+This summary tells us that the immigration flow (Pseudo-Bayesian closed) is significantly positively related to the GDP per capita and dry wave.
+Also, the immigration flow is significantly negatively related to the financial development index, the landlocked index and some weather events such as high precipitation and heat wave.
+We notice that the coefficient are very close to zero, thus the effects are relatively small.
+
+An example of interpretation would be that an increase of the GDP per capita of 10 000 would increase the immigration measure by 0.0144 units.
+An increase of the financial development index of 0.1 unit would lead to a decrease of the immigration level by 0.005.
+
+The results do not makes a lot of sense and this might be due to spatial autocorrelation in the error term which mislead us.
+
+
+```{r}
+
+summary(olm_emi)
+
+```
+This summary tells us that the emigration level (Pseudo-Bayesian closed) is significantly positively related to the GDP deflator, GDP per capita and life expectancy.
+Also, the emigration level is significantly negatively related to financial development index, Earthquake, and heavy precipitation event.
+
+We notice that the coefficient are very close to zero, thus the effects are relatively small.
+
+An example of interpretation would be that an increase of the GDP per capita of 10 000 would increase the emigration measure by 0.0079 units.
+An increase of the financial development index of 0.1 unit would lead to a decrease of the emigration level by 0.006.
+
+The results do not makes a lot of sense and this might be due to spatial autocorrelation in the error term which mislead us, let's have a look to moran plots.
+
+Moran plot on the residual :
+
+```{r}
+mp_immi <- moran.plot(residuals(olm_immi),listw = weight_list , pch = 19)
+mp_emi <- moran.plot(residuals(olm_emi),listw = weight_list , pch = 19)
+
+```
+
+It looks like there is positive spatial autocorrelation.
+
+```{r}
+
+lm.morantest(olm_immi, weight_list)
+lm.morantest(olm_emi, weight_list)
+
+```
+
+Ok there is positive spatial autocorrelation ! We can have a look at the countries with the most important spatial autocorrelation in the residual :
+
+
+
+```{r}
+local_moran_emi_t <- localmoran(olm_emi$residuals, weight_list,
+                                alternative = "greater") # We test for positive auto-corr
+local_moran_emi <- data.frame(local_moran_emi_t)
+local_moran_emi$cluster <- attr(local_moran_emi_t,"quadr")$mean
+local_moran_emi$significance<- ifelse(local_moran_emi[,"Pr.z...E.Ii.."]<0.10,1,0)
+local_moran_emi <- local_moran_emi[,c("Ii","significance","cluster")]
+colnames(local_moran_emi)<- c("Spatial_correlation_emi","significance_emi","Cluster_emi")
+
+local_moran_immi_t <- localmoran(olm_immi$residuals, weight_list,alternative = "greater")
+local_moran_immi <- data.frame(local_moran_immi_t)
+local_moran_immi$cluster <- attr(local_moran_immi_t,"quadr")$mean
+local_moran_immi$significance<- ifelse(local_moran_immi[,"Pr.z...E.Ii.."]<0.10,1,0)
+local_moran_immi <- local_moran_immi[,c("Ii","significance","cluster")]
+colnames(local_moran_immi)<- c("Spatial_correlation_immi","significance_immi","Cluster_immi")
+
+
+local_moran_df <- cbind(local_moran_emi,local_moran_immi)
+local_moran_df$id <- final_table$iso3
+local_moran_df$name <- final_table$name
+
+local_moran_graph<-merge(final_table,local_moran_df[, c("Spatial_correlation_emi",
+                                                        "Cluster_immi",
+                                                        "significance_immi",
+                                                        "significance_emi",
+                                                        "Cluster_emi",
+                                                        "Spatial_correlation_immi",
+                                                        "id")],by.x="iso3",by.y="id")
+```
+
+
+
+### Immigration : 
+
+Now we want to know where are located the countries with the most important spatial autocorrelation in the residuals for immigration.
+
+```{r}
+moran_plot_data <- data.frame(residuals= residuals(olm_immi),
+                              lag_residuals= lag.listw(weight_list, residuals(olm_immi)),
+                              cluster= local_moran_df$Cluster_immi,
+                              significance = local_moran_df$significance_immi)
+
+
+ggplot(moran_plot_data)+
+  geom_point(aes(x=residuals,y=lag_residuals,color=cluster,alpha=significance))+
+  geom_smooth(aes(x=residuals,y=lag_residuals),method="lm")+
+  ggtitle("Moran plot on residuals for immigration")
+
+
+```
+
+
+```{r}
+ggplot() +
+  geom_sf(data = local_moran_graph, aes(fill = Cluster_immi), color = "black", size = 0.1)+
+  theme_minimal() +
+  labs(title = "Map of HH, HL, LH, LL clusters for immigrates", fill = "local_I_in") +
+  theme(legend.position = "right")
+
+```
+We observe some outliers : Germany, Chile, Ecuator, Mongolia... but if we look at significancy :
+
+
+```{r}
+# Plot only significant one !
+ggplot() +
+  geom_sf(data = local_moran_graph, aes(fill = Cluster_immi,alpha=significance_immi ), 
+          color = "black", size = 0.1)+
+  theme_minimal() +
+  labs(title = "Map of HH, HL, LH, LL clusters for Immigrates", fill = "local_I_in") +
+  theme(legend.position = "right")
+
+```
+The immigration state of France, UK, Norway, Sweden, Morocco etc are low and it correspond to their neighbors.
+
+The immigration state of India, Venezuela, Saudi-Arabia is high it correspond to their neighbors.
+
+
+
+
+### Emigration :
+
+
+```{r}
+moran_plot_data <- data.frame(residuals= residuals(olm_emi),
+                              lag_residuals= lag.listw(weight_list, residuals(olm_emi)),
+                              cluster= local_moran_df$Cluster_emi,
+                              significance = local_moran_df$significance_emi)
+
+
+ggplot(moran_plot_data)+
+  geom_point(aes(x=residuals,y=lag_residuals,color=cluster,alpha=significance))+
+  geom_smooth(aes(x=residuals,y=lag_residuals),method="lm")+
+  ggtitle("Moran plot on residuals for emigration")
+
+
+```
+
+
+```{r}
+ggplot() +
+  geom_sf(data = local_moran_graph, aes(fill = Cluster_emi), color = "black", size = 0.1)+
+  theme_minimal() +
+  labs(title = "Map of HH, HL, LH, LL clusters for emigrates", fill = "local_I_in") +
+  theme(legend.position = "right")
+
+```
+
+
+```{r}
+# Plot only significant one !
+ggplot() +
+  geom_sf(data = local_moran_graph, aes(fill = Cluster_emi,alpha=significance_emi ), 
+          color = "black", size = 0.1)+
+  theme_minimal() +
+  labs(title = "Map of HH, HL, LH, LL clusters for emigrates", fill = "local_I_in") +
+  theme(legend.position = "right")
+
+```
+High emigration in India, Saudi-Arabia, Central africa and it correspond to their neighbors since they belong to high-high cluster.
+
+Low emigration in France, Norway, Sweden, Morocco and it correspond to their neighbors since they belong to low-low cluster.
+
+
+
+***Q Following the specific to general testing strategy presented in the course, which spatial model would you choose for each of the dependent variable. Would you choose the same model based on the AIC?***
+
+### Strategy for immigration dependent variable :
+
+#### 1 - fit a OLM, then test it against SLX and choose
+
+```{r}
+
+slx_immi <- lmSLX(formula_immi, data = final_table, listw = weight_list)  
+summary(slx_immi)
+c(aic_olm=AIC(olm_immi),aic_slx=AIC(slx_immi))
+
+
+```
+
+We prefer SLX model.
+
+#### 2 - perform LMERR and LMLAG
+
+```{r}
+
+res_test <- lm.LMtests(olm_immi, weight_list, test = "all")
+summary(res_test)
+
+```
+
+According to the test, LMerr and LMlag are significant. Also, RLMerr is significant. Thus we choose SEM model.
+
+```{r}
+sem_immi <- errorsarlm(formula_immi, data = final_table, listw = weight_list, tol.solve = 10^(-25))
+summary(sem_immi)
+
+```
+
+### Strategy for emigration dependent variable :
+
+#### 1 - fit a OLM, then test it against SLX and choose
+
+```{r}
+
+slx_emi <- lmSLX(formula_emi, data = final_table, listw = weight_list)  
+summary(slx_emi)
+c(aic_olm=AIC(olm_emi),aic_slx=AIC(slx_emi))
+
+
+```
+The best model is the one with lowest AIC, thus slx model is preferred.
+
+
+
+
+
+#### 2 - perform LMERR and LMLAG
+
+```{r}
+
+res_test <- lm.LMtests(olm_emi, weight_list, test = "all")
+summary(res_test)
+
+```
+
+According to the test, LMerr and LMlag are significant. Also, RLMlag and RLMerr are no significant. Thus we choose LAG model.
+
+```{r}
+lag_emi <- lagsarlm(formula_emi, data = final_table, listw = weight_list, tol.solve = 10^(-25)) 
+summary(lag_emi)
+
+```
+
+***Q Present the results of the models you choose and explain the coefficients (use the decomposition of direct and indirect impact if necessary). As an example, we present the results of the OLM and LAG obtained with the immigrates dependent variable (for a lag model, the direct/indirect with significance may also be presented in an additional table).***
+
+```{r}
+summary(sem_immi)
+
+```
+
+Since we use a SEM model, we can interpret the coefficient like for OLM, however we can't interpret p value due to heteroskedasticity of the variance.
+The result of SEM are much more consistent with what we could expect.
+
+We see that immigration is positively related to life expectancy, GDP per capita, political stability and conflict per capita. 
+We can say that in average an increase of the GDP per capita by 10 000 units, would lead to an increase of 0.014 of the immigration index.
+We see that immigration is negatively impacted by inflation measure, Earthquake, Storm, Flood the size of the population etc.
+We can say that countries with heavy storm, have an immigration index lowered by 0.006 units.
+
+
+
+```{r}
+spatialreg::impacts(lag_emi, listw = weight_list)
+
+```
+For lag model we can't interpret the beta coefficient. We instead look at average direct impact (ADI), average indirect impact (AII) and average total impact (ATI).
+The results does not make a lot of sense.
+
+Here are some interpretations : 
+
+An increase of the inflation measure by one unit would leads to an ADI on emigration of 0.00026. It would also increase emigration for the neighbors, the AII would be 0.00016. 
+
+Having Earthquake in the country would leads to an ADI on emigration of -0.014. It would also decrease emigration for the neighbors, the AII would be -0.0093. 
+
+Being vulnerable increase emigration by an average of 0.0463 for the country and increase also emigration for neighbors with an AII of 0.028.
+
+
+
+***Q Perform a similar spatial econometric analysis on the data observed during the period 1990-1995. Can you say if the impact of climatic variables (vulnerability, prec_3days, heat_wave, dry_wave) is the same on migratory flows?***
+
+
+We cannot re-apply what we did previously on interval 1990-1995 since our weight matrix use information about previous period. An alternative we propose is to study period 1995-2000. First, let's compute final_table for new migration flows.
+
+```{r}
+mig_data_95_00 <- mig_data[mig_data$period=='1995-2000',]
+
+load("pairs.RData")
+total_out_flows <- mig_data_95_00 %>%
+  group_by(origin) %>%
+  summarise(total_outflow = sum(pb))
+
+colnames(total_out_flows) <- c("CountryCode", "total_outflow" )
+
+total_in_flows <- mig_data_95_00 %>%
+  group_by(dest) %>%
+  summarise(total_inflow = sum(pb))
+
+colnames(total_in_flows) <- c("CountryCode", "total_inflow" )
+explanatory_merge <- merge(my_covariates, total_in_flows, by = "CountryCode")
+explanatory_merge <- merge(explanatory_merge, total_out_flows, by = "CountryCode")
+
+colnames(explanatory_merge)[1] <- "iso3"
+final_table_v2  <- merge(contour_data_transformed, explanatory_merge, by = "iso3")
+final_table_v2 <- subset(final_table_v2, !duplicated(iso3))
+final_table_v2$emigrates <- final_table_v2$total_outflow / final_table_v2$population
+final_table_v2$immigrates <- final_table_v2$total_inflow / final_table_v2$population
+final_table_v2$net <- final_table_v2$immigrates - final_table_v2$emigrates
+
+```
+
+
+```{r}
+ggplot() +
+  geom_sf(data = final_table_v2, aes(fill = emigrates ), size = 0.1, col = NA) +
+  scale_fill_continuous_sequential(palette = "Blues 3", name = paste("Emigrate rate")) +
+  theme_minimal()  +
+  labs(title = "Emigration Rate by country")
+
+```
+
+We see that there is a lot of emigration in Kazakhstan, Guyana and Georgia compared to emigration in 2015-2020 where the principal emigration was in Australia, central Africa, Saudi Arabia area, Venezuela, Canada, and Kazakhstan.
+
+```{r}
+ggplot() +
+  geom_sf(data = final_table_v2, aes(fill = immigrates ), size = 0.1, col = NA) +
+  scale_fill_continuous_sequential(palette = "Blues 3", name = paste("Immigrate rate")) +
+  theme_minimal()  +
+  labs(title = "Immigration Rate by country")
+
+```
+
+We see that there is a lot of immigration in Bosnia, Canada, United-States, Russia, Australia, Europe and Saudi-Arabia compared to 2015-2020 where the highest immigration was in Saudi Arabia area, in the West Coast of South America, in Canada, in Kazakhstan, and in some countries in Europe(Luxembourg, Germany).
+
+```{r}
+ggplot() +
+  geom_sf(data = final_table_v2, aes(fill = net ), size = 0.1, col = NA)+
+  scale_fill_gradient2(low = "red", mid = "grey", high = "green", midpoint = 0) +
+  theme_minimal()  +
+  labs(title = "Net difference immigration-emigration rate by country")
+
+```
+
+We see that there is more immigration than emigration in Canada, in the north America, in Australia, in Russia, and in some countries in Europe and Africa. We also see that there is more emigration than immigration in Kazakhstan an Georgia.
+
+Now we can define our spatial weight matrix as we did previously.
+
+### Spatial socio-characteristic :
+
+```{r}
+# We want to define the 2 top neighbors based on migration Pseudo-Bayesian closed :
+
+K = 1
+mig_data_10_15 <- mig_data[mig_data$period=='1990-1995',]
+matrix_representation <- dcast(mig_data_10_15, origin ~ dest, value.var = "pb")
+row.names(matrix_representation) <- matrix_representation$origin
+matrix_representation <- matrix_representation[,-which(
+  colnames(matrix_representation)=="origin")]
+
+# Remove the one we are not interested in :
+
+matrix_representation<-matrix_representation[which(
+  colnames(matrix_representation)%in%final_table_v2$iso3),
+  which(colnames(matrix_representation)%in%final_table_v2$iso3)]
+
+
+
+for(country in colnames(matrix_representation)){
+  
+Top_neighbors <- which(matrix_representation[country,] %in% sort(
+    as.numeric(matrix_representation[country,]),decreasing =T)[1:K])
+matrix_representation[country,Top_neighbors] <- 1
+matrix_representation[country,-Top_neighbors] <- 0  
+  
+}
+
+# Make it symmetric
+Spatial_weight_migration <- (t(matrix_representation)+matrix_representation)/2
+
+# Create a list : 
+neighbor_list <- list()
+
+# Iterate over each row of the spatial weight matrix
+for (i in 1:nrow(Spatial_weight_migration )) {
+  # Extract indices of neighboring regions for the current region
+  neighbors <- which(Spatial_weight_migration [i, ] > 0)
+  
+  # Remove the current region from the list of neighbors
+  neighbors <- neighbors[neighbors != i]
+  
+  # Add the list of neighbors to the neighbor list
+  neighbor_list[[i]] <- neighbors
+}
+class(neighbor_list) <- "nb"
+```
+
+
+```{r}
+# Get Nearest neighbors
+geometry <- st_geometry(final_table_v2)
+centroid <- st_coordinates(st_centroid(geometry ))
+
+```
+
+```{r}
+
+plot.new()
+plot(geometry , lwd = 1)
+plot(neighbor_list, centroid, add = TRUE, col = "red")
+
+```
+
+### Spatial distance :
+
+Now we can focus on spatial distance. We want migration to be easier for close cross border countries.
+
+```{r}
+# Get Nearest neighbors
+geometry  <- st_geometry(final_table_v2)
+centroid <- st_coordinates(st_centroid(geometry ))
+neighbors_5NN <- knn2nb(knearneigh(centroid , 4))
+
+```
+
+```{r}
+
+plot.new()
+plot(geometry , lwd = 1)
+plot(neighbors_5NN, centroid, add = TRUE, col = "red")
+
+```
+
+### Union for final spatial weight matrix:
+
+```{r}
+# Combine both sets of neighbors
+combined_nb <- union.nb(neighbors_5NN, neighbor_list)
+
+# Create the spatial weight matrix
+weight_list <- nb2listw(combined_nb)
+
+```
+
+```{r}
+plot.new()
+plot(geometry , lwd = 1)
+plot(combined_nb, centroid, add = TRUE, col = "red")
+
+```
+
+This weight distance matrix looks really nice, we have local and global link and the number of link seems not too big.
+
+Now, we use a Moran scatter plot as a first investigation whether there is spatial autocorrelation in the dependent variables.
+
+```{r}
+moran_plot_immi <- moran.plot(final_table_v2$immigrates,listw = weight_list,
+                              labels=as.character(final_table_v2$iso3))
+```
+
+```{r}
+moran_plot_emi <- moran.plot(final_table_v2$emigrates, listw = weight_list,
+                             labels=as.character(final_table_v2$iso3))
+
+```
+
+We suspect spatial correlation for both emigration and immigration, we observe positive trend of the Moran index, however it is clearer for emigra.
+
+We can now have a look at the location with the most important local spatial autocorrelation.
+
+```{r}
+local_moran_emi_t <- localmoran(final_table_v2$emigrates, weight_list,
+                                alternative = "greater") # We test for positive auto-corr
+local_moran_emi <- data.frame(local_moran_emi_t)
+local_moran_emi$cluster <- attr(local_moran_emi_t,"quadr")$mean
+local_moran_emi$significance<- ifelse(local_moran_emi[,"Pr.z...E.Ii.."]<0.10,1,0)
+local_moran_emi <- local_moran_emi[,c("Ii","significance","cluster")]
+colnames(local_moran_emi)<- c("Spatial_correlation_emi","significance_emi","Cluster_emi")
+
+local_moran_immi_t <- localmoran(final_table_v2$immigrates, weight_list,alternative = "greater")
+local_moran_immi <- data.frame(local_moran_immi_t)
+local_moran_immi$cluster <- attr(local_moran_immi_t,"quadr")$mean
+local_moran_immi$significance<- ifelse(local_moran_immi[,"Pr.z...E.Ii.."]<0.10,1,0)
+local_moran_immi <- local_moran_immi[,c("Ii","significance","cluster")]
+colnames(local_moran_immi)<- c("Spatial_correlation_immi","significance_immi","Cluster_immi")
+
+
+local_moran_df <- cbind(local_moran_emi,local_moran_immi)
+local_moran_df$id <- final_table_v2$iso3
+local_moran_df$name <- final_table_v2$name
+
+
+```
+
+```{r}
+significant <- which(local_moran_df$significance_immi==1)
+local_moran_df_signif<- local_moran_df[order(
+  local_moran_df$Spatial_correlation_immi[significant],decreasing = TRUE),]
+
+
+# Creating the ggplot for the top ten observations
+ggplot(local_moran_df_signif, aes(x = reorder(name, -Spatial_correlation_immi), 
+                                  y = Spatial_correlation_immi)) +
+  geom_col() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) +
+  ggtitle("Countries with significant local spatial autocorrelation for immigration") +
+  labs(x = "Name", y = "Local Moran I")
+
+
+```
+The countries with the most important significant local spatial autocorrelation for immigration are : Antigua & Barbuda,United Arab Emirates, Bosnia and Bahrain. In 2015-2020 it was United Arab Emirates and Bahrain.
+
+
+```{r}
+significant <- which(local_moran_df$significance_emi==1)
+local_moran_df_signif<- local_moran_df[order(
+  local_moran_df$Spatial_correlation_emi[significant],decreasing = TRUE),]
+
+
+# Creating the ggplot for the top ten observations
+ggplot(local_moran_df_signif, aes(x = reorder(name, -Spatial_correlation_emi), 
+                                  y = Spatial_correlation_emi)) +
+  geom_col() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) +
+  ggtitle("Countries with significant local spatial autocorrelation for emigration") +
+  labs(x = "Name", y = "Local Moran I")
+
+```
+
+The countries with the most important significant local spatial autocorrelation for emigration are : Armenia, Antigua, Barbados and Albania. In comparison in 2015-2020 it was United Arab Emirates, Bahrain and Aruba. 
+
+We can also represent the results on the map as follow :
+
+```{r}
+local_moran_graph <- merge(final_table_v2,local_moran_df[,c("Spatial_correlation_emi",
+                                                            "significance_emi" ,
+                                                            "significance_immi",
+                                                            "Spatial_correlation_immi",
+                                                            "id")],by.x="iso3",by.y="id")
+
+centroids <- st_coordinates(st_centroid(local_moran_graph$geometry))
+
+local_moran_graph$X <- centroids[,1]
+local_moran_graph$Y <- centroids[,2]
+
+
+```
+
+
+```{r}
+ggplot() +
+  geom_sf(data = local_moran_graph, size = 0.1, col = NA)+
+  geom_point(data=subset(local_moran_graph,local_moran_df$significance_emi==1), 
+             aes(x = X, y =Y, size = Spatial_correlation_emi),color = "black", 
+             fill = "red",stroke=1,shape=21) +
+  scale_size_continuous(range = c(1, 5)) +
+  theme_minimal()  +
+  labs(title = "Spatial autocorrelation for the Emigration by country")
+
+```
+We see that we have high local spatial autocorrelation for emigration around central Africa, West of south America, Dominican republic, Syria and around and some countries in Europe.
+
+
+
+```{r}
+ggplot() +
+  geom_sf(data = local_moran_graph, size = 0.1, col = NA)+
+  geom_point(data=subset(local_moran_graph,local_moran_df$significance_immi==1), 
+             aes(x = X, y =Y, size = Spatial_correlation_immi),color = "black", 
+             fill = "red",stroke=1,shape=21) +
+  scale_size_continuous(range = c(1, 5)) +
+  theme_minimal()  +
+  labs(title = "Spatial autocorrelation for the Immigration by country")
+
+```
+We see that we have high local spatial autocorrelation for immigration around Europe,South and North-Africa, Saudi-Arabia, Indonesia, Dominican Republic and countries between Argentina and Brazil.
+
+We suspect spatial autocorrelation, thus we perform Moran test. We suppose that the data is not iid and does not follow any distribution, thus we set H0 under non free sampling .
+
+```{r}
+moran.test(final_table_v2$emigrates, weight_list)
+
+```
+
+```{r}
+moran.test(final_table_v2$immigrates, weight_list)
+
+```
+
+Based on the Moran's I test results, we can conclude that there is significant positive spatial autocorrelation in both emigrates and immigrates data.
+Let's try to model migration with simple OLM model.
+
+```{r}
+# ordinary linear model
+explanatory_var <- colnames(final_table_v2)[10:25]
+formula_immi <- as.formula(paste("immigrates ~", paste(explanatory_var, collapse = " + ")))
+formula_emi <- as.formula(paste("emigrates ~", paste(explanatory_var, collapse = " + ")))
+
+
+olm_immi <- lm(formula_immi, data = final_table_v2)
+olm_emi <- lm(formula_emi, data = final_table_v2)
+
+```
+
+Let's first look at the olm results for immigration as dependent variable. 
+```{r}
+summary(olm_immi)
+
+```
+This summary tells us that the immigration flow (Pseudo-Bayesian closed) is significantly positively related to the GDP per capita and life expectancy.
+Also, the immigration flow is significantly negatively related to heavy earthquake and storm.
+We notice that the coefficient are very close to zero, thus the effects are relatively small.
+
+```{r}
+
+summary(olm_emi)
+
+```
+This summary tells us that the emigration level (Pseudo-Bayesian closed) is significantly positively related to schooling level.
+
+Also, the emigration level is significantly negatively related to financial development index, heavy precipitation and dry wave events.
+
+We notice that the coefficient are very close to zero, thus the effects are relatively small.
+
+The results do not makes a lot of sense and this might be due to spatial autocorrelation in the error term which mislead us, let's have a look to moran plots.
+
+Moran plot on the residual :
+
+```{r}
+mp_immi <- moran.plot(residuals(olm_immi),listw = weight_list , pch = 19)
+mp_emi <- moran.plot(residuals(olm_emi),listw = weight_list , pch = 19)
+
+```
+
+It looks like there is positive spatial autocorrelation but it is not that big.
+
+```{r}
+
+lm.morantest(olm_immi, weight_list)
+lm.morantest(olm_emi, weight_list)
+
+```
+
+Ok there is positive spatial autocorrelation ! We can have a look at the countries with the most important spatial autocorrelation in the residual :
+
+
+
+```{r}
+local_moran_emi_t <- localmoran(olm_emi$residuals, weight_list,
+                                alternative = "greater") # We test for positive auto-corr
+local_moran_emi <- data.frame(local_moran_emi_t)
+local_moran_emi$cluster <- attr(local_moran_emi_t,"quadr")$mean
+local_moran_emi$significance<- ifelse(local_moran_emi[,"Pr.z...E.Ii.."]<0.10,1,0)
+local_moran_emi <- local_moran_emi[,c("Ii","significance","cluster")]
+colnames(local_moran_emi)<- c("Spatial_correlation_emi","significance_emi","Cluster_emi")
+
+local_moran_immi_t <- localmoran(olm_immi$residuals, weight_list,alternative = "greater")
+local_moran_immi <- data.frame(local_moran_immi_t)
+local_moran_immi$cluster <- attr(local_moran_immi_t,"quadr")$mean
+local_moran_immi$significance<- ifelse(local_moran_immi[,"Pr.z...E.Ii.."]<0.10,1,0)
+local_moran_immi <- local_moran_immi[,c("Ii","significance","cluster")]
+colnames(local_moran_immi)<- c("Spatial_correlation_immi","significance_immi","Cluster_immi")
+
+
+local_moran_df <- cbind(local_moran_emi,local_moran_immi)
+local_moran_df$id <- final_table_v2$iso3
+local_moran_df$name <- final_table_v2$name
+
+local_moran_graph<-merge(final_table_v2,local_moran_df[,c("Spatial_correlation_emi",
+                                                          "Cluster_immi",
+                                                          "significance_immi",
+                                                          "significance_emi",
+                                                          "Cluster_emi",
+                                                          "Spatial_correlation_immi",
+                                                          "id")],by.x="iso3",by.y="id")
+```
+
+
+
+### Immigration : 
+
+Now we want to know where are located the countries with the most important spatial autocorrelation in the residuals for immigration.
+
+```{r}
+moran_plot_data <- data.frame(residuals= residuals(olm_immi),
+                              lag_residuals= lag.listw(weight_list, residuals(olm_immi)),
+                              cluster= local_moran_df$Cluster_immi,
+                              significance = local_moran_df$significance_immi)
+
+
+ggplot(moran_plot_data)+
+  geom_point(aes(x=residuals,y=lag_residuals,color=cluster,alpha=significance))+
+  geom_smooth(aes(x=residuals,y=lag_residuals),method="lm")+
+  ggtitle("Moran plot on residuals for immigration")
+
+
+```
+
+
+```{r}
+ggplot() +
+  geom_sf(data = local_moran_graph, aes(fill = Cluster_immi), color = "black", size = 0.1)+
+  theme_minimal() +
+  labs(title = "Map of HH, HL, LH, LL clusters for immigrates", fill = "local_I_in") +
+  theme(legend.position = "right")
+
+```
+We observe some outliers :United-States, Russia, Australia with high immigration compared to their neighbors. Also, some countries such as Colombia, Mongolia, and Syria region have low immigration level compared to their neighbors ... but if we look at significance :
+
+
+```{r}
+# Plot only significant one !
+ggplot() +
+  geom_sf(data = local_moran_graph, aes(fill = Cluster_immi,alpha=significance_immi ), 
+          color = "black", size = 0.1)+
+  theme_minimal() +
+  labs(title = "Map of HH, HL, LH, LL clusters for Immigrates", fill = "local_I_in") +
+  theme(legend.position = "right")
+
+```
+We see that France, Norway, Sweden or argentina have low immigration level and it correspond to their neighbors.
+
+India, Venezuela, Central africa have high immigration level and it correspond to what happens for their neighbors.
+
+
+### Emigration :
+
+
+```{r}
+moran_plot_data <- data.frame(residuals= residuals(olm_emi),
+                              lag_residuals= lag.listw(weight_list, residuals(olm_emi)),
+                              cluster= local_moran_df$Cluster_emi,
+                              significance = local_moran_df$significance_emi)
+
+
+ggplot(moran_plot_data)+
+  geom_point(aes(x=residuals,y=lag_residuals,color=cluster,alpha=significance))+
+  geom_smooth(aes(x=residuals,y=lag_residuals),method="lm")+
+  ggtitle("Moran plot on residuals for emigration")
+
+
+```
+
+
+
+```{r}
+ggplot() +
+  geom_sf(data = local_moran_graph, aes(fill = Cluster_emi), color = "black", size = 0.1)+
+  theme_minimal() +
+  labs(title = "Map of HH, HL, LH, LL clusters for emigrates", fill = "local_I_in") +
+  theme(legend.position = "right")
+
+```
+
+
+```{r}
+# Plot only significant one !
+ggplot() +
+  geom_sf(data = local_moran_graph, aes(fill = Cluster_emi,alpha=significance_emi ), 
+          color = "black", size = 0.1)+
+  theme_minimal() +
+  labs(title = "Map of HH, HL, LH, LL clusters for emigrates", fill = "local_I_in") +
+  theme(legend.position = "right")
+
+```
+High emigration Syria and it correspond to their neighbors since they belong to high-high cluster.
+
+Low emigration in France, Sweden, countries around Gabon and Ecuador and it correspond to their neighbors since they belong to low-low cluster.
+
+Let's follow the same strategy as previously to find the model which is well suited to model migration.
+
+### Strategy for immigration dependent variable :
+
+#### 1 - fit a OLM, then test it against SLX and choose
+
+```{r}
+
+slx_immi <- lmSLX(formula_immi, data = final_table_v2, listw = weight_list)  
+summary(slx_immi)
+c(aic_olm=AIC(olm_immi),aic_slx=AIC(slx_immi))
+
+
+```
+
+We prefer OLM model.
+
+#### 2 - perform LMERR and LMLAG
+
+```{r}
+
+res_test <- lm.LMtests(olm_immi, weight_list, test = "all")
+summary(res_test)
+
+```
+
+According to the test, LMerr and LMlag are non significant, thus we choose OLM model.
+
+
+### Strategy for emigration dependent variable :
+
+#### 1 - fit a OLM, then test it against SLX and choose
+
+```{r}
+
+slx_emi <- lmSLX(formula_emi, data = final_table_v2, listw = weight_list)  
+summary(slx_emi)
+c(aic_olm=AIC(olm_emi),aic_slx=AIC(slx_emi))
+
+
+```
+The best model is the one with lowest AIC, thus OLM model is preferred.
+
+
+
+
+
+#### 2 - perform LMERR and LMLAG
+
+```{r}
+
+res_test <- lm.LMtests(olm_emi, weight_list, test = "all")
+summary(res_test)
+
+```
+
+According to the test, LMerr and LMlag are significant. Also, RLMlag and RLMerr are no significant. Thus we choose LAG model.
+
+```{r}
+lag_emi <- lagsarlm(formula_emi, data = final_table_v2, listw = weight_list, 
+                    tol.solve = 10^(-25)) 
+summary(lag_emi)
+
+```
+
+We can now interpret the chosen model.
+
+```{r}
+summary(olm_immi)
+
+```
+
+This summary tells us that the immigration flow (Pseudo-Bayesian closed) is significantly positively related to the GDP per capita and life expectancy.
+Also, the immigration flow is significantly negatively related to heavy earthquake and storm.
+Increase GDP per capita by 10 000 units would increase the immigration level by 0.0044.
+A country with earthquake has on average an immigration level lowered by 0.013.
+A country with heavy storm has on average an immigration level lowered by 0.0071.
+
+We can also see that vulnerability, prec_3days, heat_wave, dry_wave variables are not significantly related to immigration.
+
+
+
+
+```{r}
+spatialreg::impacts(lag_emi, listw = weight_list)
+
+```
+For lag model we can't interpret the beta coefficient. We instead look at average direct impact (ADI), average indirect impact (AII) and average total impact (ATI).
+The results does not make a lot of sense.
+
+Vulnerability measure increases the emigration on the country itself and on the neighbors. 
+Heavy precipitation measure decreases the emigration on the country itself and on the neighbors.
+Heat wave measure decreases the emigration on the country itself and on the neighbors. 
+Dry wave measure decreases the emigration on the country itself and on the neighbors. 
+
+As we can see, compared to 2015-2020, the effect of vulnerability and precipitation is quite the same but the effect of heat wave and dry wave has lowered: 
+
+  - Heat wave has a direct effect of -0.0000334 for period 1995-2000 compared to -0.000183 in 2015-2020 which does not make sense since I would expect people to leave their country when there are heat wave. Also due to global warming, I would expect the effect to be higher not lower.
+  
+  - Dry wave has a direct effect of -0.000064 for period 1995-2000 compared to -0.000014 in 2015-2020 which does not make sense either, however the coefficient increase which makes more sense.
+
+
+
+
+# 3. Bilateral Migration Flows
+
+The aim of this part is to explain the bilateral migration flows using a gravity model. This model can be formalized as $$ y = \iota_N\alpha + X_0\beta_0 + X_d\beta_d + G\omega + \epsilon  $$ where $\beta_0,\ \beta_d,\ \omega$ are vectors of parameters whose dimensions correspond to the number of variables in $X_0,\ X_d,\ G$ respectively.
+
+-   $X_0$ represents the characteristics of the origin countries
+-   $X_d$ represents the characteristics of the destination countries
+-   $G$ represents the measures related to a pair of countries, like distances between origin and destination, or indicators for a common spoken language
+
+***Q From the migration data, merge the migration flow estimate that you have chosen in the first part of the project with explanatory variables. Keep only the observations whose origin and destination are present in the world database. You might obtain something like this:***
+
+```{r}
+# we keep only the variables we are interested in
+data_part3 <- final_table %>%
+  select(iso3, deflactor, lifeexp, dummyEarthquake, dummyFlood, dummyStorm,
+         GDPpercapita_UN, FD, population, politicalstability, landlocked,
+         conflictpercapita, vulnerability, prec_3days, heat_wave, dry_wave,
+         schooling_years_mean)
+
+mig_data_15_20_part3 <- mig_data_15_20 %>%
+  select(origin, dest, pb)
+
+#now let's merge
+merged_data_part3 <- merge(mig_data_15_20_part3, data_part3, by.x = "origin", by.y = "iso3")
+merged_data_part3 <- merge(merged_data_part3, data_part3, by.x = "dest", by.y = "iso3", 
+                           suffixes = c("_O", "_D"))
+
+head(merged_data_part3)
+```
+
+***Q Compute the distances between each pairs O-D using st_distance(). Merge the vector to the data.***
+
+```{r}
+contour_data_transformed <- na.omit(contour_data_transformed)
+
+dist_mat <- st_distance(contour_data_transformed, contour_data_transformed)
+dimnames(dist_mat) <- list(contour_data_transformed$iso3, contour_data_transformed$iso3)
+
+#Function to get the distance from the matrix
+get_distance <- function(orig, dest) {
+  return(dist_mat[orig, dest])
+}
+
+merged_data_part3$dist <- mapply(get_distance, merged_data_part3$dest, 
+                                 merged_data_part3$origin)
+
+head(merged_data_part3)
+
+```
+
+***Q estimate a gravity model and comment on your results***
+
+According to Rodrigue et al. (2009), the gravity model of migration is a model in urban geography derived from Newton's law of gravity, and used to predict the degree of migration interaction between two places. The two more important variables according to the theory should be size (population) and distance.
+
+According to the course, we should take the log of all variables. However here we have some variables that can be equal to 0 or negative, we did not take the log for all variables. And, to take the log of Y, we added 0.01 to avoid having 0 (since it is important to have the log of the explained variable).
+
+```{r, warning=TRUE}
+gravity_model <- lm(log(pb+0.001) ~ deflactor_O + log(lifeexp_O) 
+                        + log(GDPpercapita_UN_O) + log(population_O) + log(FD_O) 
+                        + politicalstability_O + landlocked_O
+                        + dummyEarthquake_O + dummyStorm_O + dummyFlood_O
+                        + conflictpercapita_O + log(vulnerability_O) 
+                        + log(prec_3days_O) + heat_wave_O
+                        + log(dry_wave_O) + log(schooling_years_mean_O)
+                        + deflactor_D + log(lifeexp_D) 
+                        + log(GDPpercapita_UN_D) + log(population_D) + log(FD_D) 
+                        + politicalstability_D + landlocked_D 
+                        + dummyEarthquake_D + dummyStorm_D + dummyFlood_D
+                        + conflictpercapita_D + log(vulnerability_D) 
+                        + log(prec_3days_D ) + heat_wave_D
+                        + log(dry_wave_D) + log(schooling_years_mean_D)
+                        + dist,
+                        data = merged_data_part3)
+
+summary(gravity_model)
+```
+The multiple R-squared value is 0.51, and the adjusted R-squared value is 0.51.  
+These values indicate that about 51% of the variation in pb can be explained by the model.
+
+**Significant Variables:** Several variables show statistically significant coefficients, indicating their importance in explaining migration rates. These are: log(lifeexp_O), log(GDPpercapita_UN_O), log(population_O), log(FD_O), politicalstability_O, landlocked_O, dummyFlood_O, conflictpercapita_O, log(vulnerability_O), log(prec_3days_O), log(dry_wave_O), log(schooling_years_mean_O), deflactor_D, log(GDPpercapita_UN_D), log(population_D), log(FD_D), politicalstability_D, landlocked_D, dummyEarthquake_D, dummyStorm_D, dummyFlood_D, conflictpercapita_D, log(vulnerability_D), heat_wave_D, log(dry_wave_D), log(schooling_years_mean_D) and dist.
+
+**Insignificant Variables:** Some variables, such as deflactor_O, dummyEarthquake_O, dummyStorm_O, heat_wave_O, log(lifeexp_D) and log(prec_3days_D) appear to be statistically insignificant in explaining migration rates.
+
+**Positive Coefficients:** Positive coefficients suggest a positive relationship between the predictor variable and migration rates. For instance, variables like log(GDPpercapita_UN_O), log(population_O), log(FD_O), politicalstability_O, dummyFlood_O, conflictpercapita_O, deflactor_D, log(GDPpercapita_UN_D), log(population_D), log(FD_D), politicalstability_D, dummyEarthquake_D, dummyStorm_D, dummyFlood_D, conflictpercapita_D, and heat_wave_D have positive coefficients, indicating that higher values of these variables are associated with higher migration rates.
+
+**Negative Coefficients:** Negative coefficients indicate a negative relationship. For example, log(lifeexp_O), landlocked_O, log(vulnerability_O), log(prec_3days_O), log(dry_wave_O), log(schooling_years_mean_O), landlocked_D, log(vulnerability_D), log(dry_wave_D), log(schooling_years_mean_D) and dist have negative coefficients, implying for example that being landlocked (for the origin country) tend to reduce migration rates
+
+**Example of interpretation:**
+-   log(GDPpercapita_UN_O): With a coefficient of 1.1, it suggests that, on average, a 1% increase in the index of political stability in the origin country, migration rates increase by approximately 1.1%, holding all other variables constant.
+
+
+***Q Investigate whether there is spatial correlation in the residuals when they are aggregated at origin and destination level***
+
+```{r}
+
+# Compute Residuals
+merged_data_part3$residuals <- residuals(gravity_model)
+
+# Aggregate Residuals at Origin and Destination Levels
+aggregated_resid_origin <- merged_data_part3 %>%
+  group_by(origin) %>%
+  summarize(sum_resid_origin = sum(residuals, na.rm = TRUE))
+
+aggregated_resid_dest <- merged_data_part3 %>%
+  group_by(dest) %>%
+  summarize(sum_resid_dest = sum(residuals, na.rm = TRUE))
+
+# Spatial Autocorrelation Test
+moran_test_origin <- moran.test(aggregated_resid_origin$sum_resid_origin, listw = weight_list)
+moran_test_dest <- moran.test(aggregated_resid_dest$sum_resid_dest, listw = weight_list)
+
+print(moran_test_origin)
+print(moran_test_dest)
+
+```
+Origin Level: The p-value is less than 0.05, suggesting rejection of the null hypothesis. This indicates significant positive spatial autocorrelation at the origin level. This result suggests that the mean residuals at the origin level tend to be more similar for neighboring countries than for randomly chosen pairs of countries. It implies that there might be some unaccounted spatial factors affecting the migration flows that are not captured by the gravity model.
+
+Destination Level: The p-value is less than 0.05, suggesting rejection of the null hypothesis. This indicates significant positive spatial autocorrelation at the destination level. This result suggests that the mean residuals at the destination level tend to be more similar for neighboring countries than for randomly chosen pairs of countries. It implies that there might be some unaccounted spatial factors affecting the migration flows that are not captured by the gravity model.
+
+
+***Q Use the below formulas to compute spatial lags of the residuals and use the lags with respect to each of the neighborhood matrices to create Moran scatter plots. Each of these plots should have a regression slope. You might obtain something like this: Finally, comment on the results obtained.***
+
+```{r}
+#Compute the flow level neighborhood matrices
+W <- as(Matrix::Matrix(as.matrix(nb2mat(combined_nb))), "dgCMatrix")
+
+Wo <- kronecker(W, diag(nrow(W)))
+Wd <- kronecker(diag(nrow(W)), W)
+Ww <- kronecker(W, W)
+```
+
+```{r}
+# Compute Y Matrix
+y <- merged_data_part3[, c("origin", "dest", "pb")]
+
+orig_countries <- unique(y$origin) 
+dest_countries <- unique(y$dest)
+sorted_orig_countries <- sort(orig_countries)
+
+Y <- matrix(0, nrow = length(dest_countries), ncol = length(sorted_orig_countries))
+rownames(Y) <- dest_countries
+colnames(Y) <- sorted_orig_countries
+
+for (i in 1:nrow(y)) {
+  orig <- y$origin[i]
+  dest <- y$dest[i]
+  migration_value <- y$pb[i]
+  orig_index <- match(orig, sorted_orig_countries)
+  Y[dest, orig_index] <- migration_value
+}
+
+# Compute Spatial Lags of the Flows
+Woy <- as.vector(Y %*% Matrix::t(W))
+Wdy <- as.vector(W %*% Y)
+Wwy <- as.vector(W %*% Y %*% Matrix::t(W))
+
+```
+
+```{r}
+# Create Moran Scatter Plots and Compute Regression Slopes
+Wo_listw <- mat2listw(Wo, style = "W")
+Wd_listw <- mat2listw(Wd, style = "W")
+Ww_listw <- mat2listw(Ww, style = "W")
+
+residuals <- merged_data_part3$residuals
+
+# Moran Scatter Plot for Wo
+moran.plot(residuals, listw = Wo_listw, main = "Wo-based Moran Plot", pch = 19)
+moran_test_Wo <- moran.test(residuals, listw = Wo_listw)
+moran_I_Wo <- moran_test_Wo$estimate["Moran I statistic"]
+expected_value_Wo <- moran_test_Wo$estimate["Expectation"]
+abline(a = 0, b = moran_I_Wo, col = "red")
+
+# Moran Scatter Plot for Wd
+moran.plot(residuals, listw = Wd_listw, main = "Wd-based Moran Plot", pch = 19)
+moran_test_Wd <- moran.test(residuals, listw = Wd_listw)
+moran_I_Wd <- moran_test_Wd$estimate["Moran I statistic"]
+expected_value_Wd <- moran_test_Wd$estimate["Expectation"]
+abline(a = 0, b = moran_I_Wd, col = "red")
+
+# Moran Scatter Plot for Ww
+moran.plot(residuals, listw = Ww_listw, main = "Ww-based Moran Plot", pch = 19)
+moran_test_Ww <- moran.test(residuals, listw = Ww_listw)
+moran_I_Ww <- moran_test_Ww$estimate["Moran I statistic"]
+expected_value_Ww <- moran_test_Ww$estimate["Expectation"]
+abline(a = 0, b = moran_I_Ww, col = "red")
+```
+
+These three graphs suggest that there is positive spatial correlation in the residuals for origin, destination and origin-to-destination level.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
