@@ -9,7 +9,7 @@ Table of Contents
   - **Graph Analysis:** The objective was to investigate the spreading of a disease, an opinion, a behavior, information, or another transmissible resource, on a real network. We decided to work on the spreading of different contagious diseases on the air transportation flow of the United States before and
 during the COVID-19 pandemic, respectively in 2019 and 2021.
   
-  - **House Price Prediction:** 
+  - **House Price Prediction:** This project was for the course Mathematics for Machine and Deap Learning. The project's objective was to predict house prices based on various features. The tasks included data exploration, variable selection, handling missing data, prediction algorithms, hyperparameter optimization, explaining predictions, clustering, and dimension reduction, with a focus on resampling, statistical modeling, and optimization issues.
   
   - Non Parametric Models:
   
