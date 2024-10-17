@@ -11,7 +11,7 @@ during the COVID-19 pandemic, respectively in 2019 and 2021.
   
   - **House Price Prediction:** This project was for the course Mathematics for Machine and Deap Learning. The project's objective was to predict house prices based on various features. The tasks included data exploration, variable selection, handling missing data, prediction algorithms, hyperparameter optimization, explaining predictions, clustering, and dimension reduction, with a focus on resampling, statistical modeling, and optimization issues.
   
-  - Non Parametric Models:
+  - **Non Parametric Models:** The objective was to explore cross-validation methods for Kernel Density Estimation, specifically focusing on Maximum Likelihood Cross Validation for bandwidth selection.
   
   - Program Evaluation:
   
