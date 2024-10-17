@@ -19,6 +19,7 @@ during the COVID-19 pandemic, respectively in 2019 and 2021.
       - Bankruptcy: The objective was to predict whether a company is likely to go bankrupt or not by using the Linear Discriminant Analysis (LDA) method. 
       - Marketing: The goal was to build different models to predict whether a user will click on an ad based on the characteristics of the user.
   
-  - **Spatial Econometrics:**
-  
-  - Web Mining:
+  - **Spatial Econometrics:** This project explores international migration by first describing the available data, then analyzing aggregated emigration and immigration rates, and finally examining bilateral migration flows between country pairs.
+    
+  - **Web Mining:** The objective of this project was to analyze and describe part of the social web
+graph of Twitter using web mining techniques to gain insights into how users connect and communicate, as well as the types of content that drive engagement.
